@@ -35,7 +35,48 @@ async function run() {
             const result = await userCollection.findOne(query);
             res.send(result);
         })
-
+        // update user information
+        app.patch('/api/user/:email', async (req, res) => {
+            try {
+                const email = req.params.email;
+                const query = { email: email };
+                const { name, image } = req.body;
+                // Validate inputs
+                if (!name || !image) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Name and image are required'
+                    });
+                }
+                const result = await userCollection.updateOne(
+                    query,
+                    {
+                        $set: {
+                            name,
+                            image,
+                            updatedAt: new Date()
+                        }
+                    }
+                );
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({
+                        success: false,
+                        message: 'User not found'
+                    });
+                }
+                res.json({
+                    success: true,
+                    message: 'User updated successfully',
+                    result
+                });
+            } catch (error) {
+                res.status(500).json({
+                    success: false,
+                    message: 'Error updating user',
+                    error: error.message
+                });
+            }
+        });
 
         await db.command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
