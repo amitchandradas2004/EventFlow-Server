@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -151,6 +151,30 @@ app.get('/api/organization/:organizerEmail', async (req, res) => {
         res.status(500).json({ success: false, message: 'Database connection error', error: error.message });
     }
 });
+
+app.delete('/api/organization/:id', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const orgCollection = database.collection('organization');
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await orgCollection.deleteOne(query);
+        res.json({
+            success: true,
+            message: 'Organization deleted successfully',
+            result
+        });
+    } catch (error) {
+        console.error('Error deleting organization:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error deleting organization',
+            error: error.message
+        });
+    }
+});
+
+
 // Start local server if not on Vercel
 if (process.env.NODE_ENV !== 'production') {
     app.listen(port, () => {
