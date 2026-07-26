@@ -174,6 +174,37 @@ app.delete('/api/organization/:id', async (req, res) => {
     }
 });
 
+// Update an Organization by ID
+app.put('/api/organization/:id', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const orgCollection = database.collection('organization');
+        const id = req.params.id;
+        const updateData = req.body;
+        
+        delete updateData._id;
+
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = {
+            $set: updateData
+        };
+
+        const result = await orgCollection.updateOne(query, updateDoc);
+        res.json({
+            success: true,
+            message: 'Organization updated successfully',
+            result
+        });
+    } catch (error) {
+        console.error('Error updating organization:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating organization',
+            error: error.message
+        });
+    }
+});
+
 
 // Start local server if not on Vercel
 if (process.env.NODE_ENV !== 'production') {
