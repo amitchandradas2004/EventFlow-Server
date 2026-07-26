@@ -98,6 +98,34 @@ app.patch('/api/user/:email', async (req, res) => {
     }
 });
 
+
+// Create a new Organization
+app.post('/api/organization', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const orgCollection = database.collection('organization');
+        const orgData = req.body;
+
+        console.log('Received organization data:', orgData);
+
+        // Insert the new organization
+        const result = await orgCollection.insertOne(orgData);
+        res.json({
+            success: true,
+            message: 'Organization created successfully',
+            result
+        });
+    } catch (error) {
+        console.error('Error creating organization:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error creating organization',
+            error: error.message
+        });
+    }
+});
+
+
 // Start local server if not on Vercel
 if (process.env.NODE_ENV !== 'production') {
     app.listen(port, () => {
