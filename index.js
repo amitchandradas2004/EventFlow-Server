@@ -99,15 +99,13 @@ app.patch('/api/user/:email', async (req, res) => {
 });
 
 
+
 // Create a new Organization
 app.post('/api/organization', async (req, res) => {
     try {
         const database = await connectDB();
         const orgCollection = database.collection('organization');
         const orgData = req.body;
-
-        console.log('Received organization data:', orgData);
-
         // Insert the new organization
         const result = await orgCollection.insertOne(orgData);
         res.json({
@@ -125,7 +123,34 @@ app.post('/api/organization', async (req, res) => {
     }
 });
 
+// show specific organization with pagination
+app.get('/api/organization/:organizerEmail', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const orgCollection = database.collection('organization');
+        const organizerEmail = req.params.organizerEmail;
+        const query = { organizerEmail: organizerEmail };
 
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const total = await orgCollection.countDocuments(query);
+        const result = await orgCollection.find(query).skip(skip).limit(limit).toArray();
+
+        res.json({
+            success: true,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+            result
+        });
+    } catch (error) {
+        console.error('Database query error:', error);
+        res.status(500).json({ success: false, message: 'Database connection error', error: error.message });
+    }
+});
 // Start local server if not on Vercel
 if (process.env.NODE_ENV !== 'production') {
     app.listen(port, () => {
