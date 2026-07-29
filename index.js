@@ -205,6 +205,54 @@ app.put('/api/organization/:id', async (req, res) => {
     }
 });
 
+// Create a new Event
+app.post('/api/event', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+        const eventData = req.body;
+
+        // Validation
+        const { title, banner, category, location, date, ticketPrice, availableSeats, description, organizationId, organizerEmail } = eventData;
+        if (!title || !banner || !category || !location || !date || ticketPrice === undefined || availableSeats === undefined || !description || !organizationId || !organizerEmail) {
+            return res.status(400).json({
+                success: false,
+                message: 'All fields are required including organizationId and organizerEmail'
+            });
+        }
+
+        const newEvent = {
+            title,
+            banner,
+            category,
+            location,
+            date,
+            ticketPrice: Number(ticketPrice),
+            availableSeats: Number(availableSeats),
+            description,
+            organizationId,
+            organizerEmail,
+            status: 'pending',
+            createdAt: new Date()
+        };
+
+        const result = await eventCollection.insertOne(newEvent);
+        res.status(201).json({
+            success: true,
+            message: 'Event created successfully',
+            result
+        });
+    } catch (error) {
+        console.error('Error creating event:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error creating event',
+            error: error.message
+        });
+    }
+});
+
+
 
 // Start local server if not on Vercel
 if (process.env.NODE_ENV !== 'production') {
