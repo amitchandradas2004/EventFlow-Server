@@ -286,7 +286,28 @@ app.get('/api/event/organizer/:organizerEmail', async (req, res) => {
     }
 });
 
-
+// Delete an Event by ID
+app.delete('/api/event/:id', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await eventCollection.deleteOne(query);
+        res.json({
+            success: true,
+            message: 'Event deleted successfully',
+            result
+        });
+    } catch (error) {
+        console.error('Error deleting event:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error deleting event',
+            error: error.message
+        });
+    }
+});
 
 // Update an Event by ID
 app.put('/api/event/:id', async (req, res) => {
