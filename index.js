@@ -346,6 +346,49 @@ app.put('/api/event/:id', async (req, res) => {
     }
 });
 
+// Get aggregated overview stats for an organizer
+app.get('/api/organizer/stats/:organizerEmail', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const orgCollection = database.collection('organization');
+        const eventCollection = database.collection('events');
+        const organizerEmail = req.params.organizerEmail;
+
+        const orgs = await orgCollection.find({ organizerEmail }).toArray();
+        const events = await eventCollection.find({ organizerEmail }).toArray();
+
+        const orgStats = {
+            total: orgs.length,
+            approved: orgs.filter(o => (o.status || 'pending').toLowerCase() === 'approved').length,
+            pending: orgs.filter(o => (o.status || 'pending').toLowerCase() === 'pending').length,
+            rejected: orgs.filter(o => (o.status || 'pending').toLowerCase() === 'rejected').length
+        };
+
+        const eventStats = {
+            total: events.length,
+            approved: events.filter(e => (e.status || 'pending').toLowerCase() === 'approved').length,
+            pending: events.filter(e => (e.status || 'pending').toLowerCase() === 'pending').length,
+            rejected: events.filter(e => (e.status || 'pending').toLowerCase() === 'rejected').length
+        };
+
+        res.json({
+            success: true,
+            orgStats,
+            eventStats,
+            recentEvents: events.slice(-5).reverse(),
+            recentOrgs: orgs.slice(-5).reverse()
+        });
+    } catch (error) {
+        console.error('Error fetching organizer stats:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching stats',
+            error: error.message
+        });
+    }
+});
+
+
 
 
 
