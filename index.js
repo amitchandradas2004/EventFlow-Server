@@ -181,7 +181,7 @@ app.put('/api/organization/:id', async (req, res) => {
         const orgCollection = database.collection('organization');
         const id = req.params.id;
         const updateData = req.body;
-        
+
         delete updateData._id;
 
         const query = { _id: new ObjectId(id) };
@@ -251,6 +251,43 @@ app.post('/api/event', async (req, res) => {
         });
     }
 });
+
+// Get events for specific organizer with pagination & optional search
+app.get('/api/event/organizer/:organizerEmail', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+        const organizerEmail = req.params.organizerEmail;
+        const search = req.query.search || '';
+
+        const query = { organizerEmail: organizerEmail };
+        if (search) {
+            query.title = { $regex: search, $options: 'i' };
+        }
+
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const total = await eventCollection.countDocuments(query);
+        const result = await eventCollection.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).toArray();
+
+        res.json({
+            success: true,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+            result
+        });
+    } catch (error) {
+        console.error('Database query error:', error);
+        res.status(500).json({ success: false, message: 'Database connection error', error: error.message });
+    }
+});
+
+
+
 
 
 
