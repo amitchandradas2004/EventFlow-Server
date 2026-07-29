@@ -288,6 +288,43 @@ app.get('/api/event/organizer/:organizerEmail', async (req, res) => {
 
 
 
+// Update an Event by ID
+app.put('/api/event/:id', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+        const id = req.params.id;
+        const updateData = req.body;
+
+        delete updateData._id;
+
+        if (updateData.ticketPrice !== undefined) updateData.ticketPrice = Number(updateData.ticketPrice);
+        if (updateData.availableSeats !== undefined) updateData.availableSeats = Number(updateData.availableSeats);
+
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = {
+            $set: {
+                ...updateData,
+                updatedAt: new Date()
+            }
+        };
+
+        const result = await eventCollection.updateOne(query, updateDoc);
+        res.json({
+            success: true,
+            message: 'Event updated successfully',
+            result
+        });
+    } catch (error) {
+        console.error('Error updating event:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating event',
+            error: error.message
+        });
+    }
+});
+
 
 
 
