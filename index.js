@@ -98,8 +98,6 @@ app.patch('/api/user/:email', async (req, res) => {
     }
 });
 
-
-
 // Create a new Organization
 app.post('/api/organization', async (req, res) => {
     try {
@@ -118,6 +116,34 @@ app.post('/api/organization', async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Error creating organization',
+            error: error.message
+        });
+    }
+});
+
+// Get approved organizations (approved by admin, max 6 by default)
+app.get('/api/organization/approved', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const orgCollection = database.collection('organization');
+        const limit = parseInt(req.query.limit) || 6;
+
+        const query = {
+            status: { $regex: /^approved$/i }
+        };
+
+        const result = await orgCollection.find(query).sort({ createdAt: -1 }).limit(limit).toArray();
+
+        res.json({
+            success: true,
+            total: result.length,
+            result
+        });
+    } catch (error) {
+        console.error('Error fetching approved organizations:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching approved organizations',
             error: error.message
         });
     }
