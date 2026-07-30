@@ -278,6 +278,34 @@ app.post('/api/event', async (req, res) => {
     }
 });
 
+// Get approved events (approved by admin, max 6 by default)
+app.get('/api/event/approved', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+        const limit = parseInt(req.query.limit) || 6;
+
+        const query = {
+            status: { $regex: /^approved$/i }
+        };
+
+        const result = await eventCollection.find(query).sort({ createdAt: -1 }).limit(limit).toArray();
+
+        res.json({
+            success: true,
+            total: result.length,
+            result
+        });
+    } catch (error) {
+        console.error('Error fetching approved events:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching approved events',
+            error: error.message
+        });
+    }
+});
+
 // Get events for specific organizer with pagination & optional search
 app.get('/api/event/organizer/:organizerEmail', async (req, res) => {
     try {
