@@ -278,6 +278,86 @@ app.post('/api/event', async (req, res) => {
     }
 });
 
+// Get all public events (approved by admin only) with pagination (default 12/page), search, category filter & sorting
+app.get('/api/events/all', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 12;
+        const skip = (page - 1) * limit;
+
+        const search = (req.query.search || '').trim();
+        const category = (req.query.category || '').trim();
+        const sortBy = req.query.sortBy || 'newest';
+
+        // Base query: strictly approved events
+        const conditions = [
+            { status: { $regex: /^approved$/i } }
+        ];
+
+        // Apply search query (title, description, or location)
+        if (search) {
+            const searchRegex = { $regex: search, $options: 'i' };
+            conditions.push({
+                $or: [
+                    { title: searchRegex },
+                    { description: searchRegex },
+                    { location: searchRegex }
+                ]
+            });
+        }
+
+        // Apply category filter
+        if (category && category.toLowerCase() !== 'all') {
+            conditions.push({
+                category: { $regex: new RegExp(`^${category}$`, 'i') }
+            });
+        }
+
+        const query = conditions.length === 1 ? conditions[0] : { $and: conditions };
+
+        // Define sort criteria
+        let sortCriteria = { _id: -1 };
+        if (sortBy === 'date-asc') {
+            sortCriteria = { date: 1, _id: -1 };
+        } else if (sortBy === 'date-desc') {
+            sortCriteria = { date: -1, _id: -1 };
+        } else if (sortBy === 'price-asc') {
+            sortCriteria = { ticketPrice: 1, _id: -1 };
+        } else if (sortBy === 'price-desc') {
+            sortCriteria = { ticketPrice: -1, _id: -1 };
+        } else if (sortBy === 'newest') {
+            sortCriteria = { createdAt: -1, _id: -1 };
+        }
+
+        const total = await eventCollection.countDocuments(query);
+        const result = await eventCollection.find(query).sort(sortCriteria).skip(skip).limit(limit).toArray();
+        
+        // Fetch distinct categories from approved events in a Strict API v1 compliant way
+        const categoryDocs = await eventCollection.find({ status: { $regex: /^approved$/i } }, { projection: { category: 1 } }).toArray();
+        const categories = Array.from(new Set(categoryDocs.map(c => c.category).filter(Boolean)));
+
+        res.json({
+            success: true,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+            categories: categories || [],
+            result
+        });
+    } catch (error) {
+        console.error('Error fetching all public events:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching events',
+            error: error.message
+        });
+    }
+});
+
 // Get approved events (approved by admin, max 6 by default)
 app.get('/api/event/approved', async (req, res) => {
     try {
@@ -285,11 +365,8 @@ app.get('/api/event/approved', async (req, res) => {
         const eventCollection = database.collection('events');
         const limit = parseInt(req.query.limit) || 6;
 
-        const query = {
-            status: { $regex: /^approved$/i }
-        };
-
-        const result = await eventCollection.find(query).sort({ createdAt: -1 }).limit(limit).toArray();
+        const query = { status: { $regex: /^approved$/i } };
+        const result = await eventCollection.find(query).sort({ _id: -1 }).limit(limit).toArray();
 
         res.json({
             success: true,
