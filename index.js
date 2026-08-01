@@ -103,7 +103,27 @@ app.post('/api/organization', async (req, res) => {
     try {
         const database = await connectDB();
         const orgCollection = database.collection('organization');
+        const userCollection = database.collection('user');
         const orgData = req.body;
+
+        const { organizerEmail } = orgData;
+
+        if (organizerEmail) {
+            // Check if user is premium
+            const user = await userCollection.findOne({ email: organizerEmail });
+            const isPremium = user?.isPremium || false;
+
+            if (!isPremium) {
+                const count = await orgCollection.countDocuments({ organizerEmail: organizerEmail });
+                if (count >= 10) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'Free limit reached! You can publish up to 10 organizations for free. Please upgrade to Premium to publish unlimited organizations.'
+                    });
+                }
+            }
+        }
+
         // Insert the new organization
         const result = await orgCollection.insertOne(orgData);
         res.json({
@@ -334,7 +354,7 @@ app.get('/api/events/all', async (req, res) => {
 
         const total = await eventCollection.countDocuments(query);
         const result = await eventCollection.find(query).sort(sortCriteria).skip(skip).limit(limit).toArray();
-        
+
         // Fetch distinct categories from approved events in a Strict API v1 compliant way
         const categoryDocs = await eventCollection.find({ status: { $regex: /^approved$/i } }, { projection: { category: 1 } }).toArray();
         const categories = Array.from(new Set(categoryDocs.map(c => c.category).filter(Boolean)));
@@ -521,13 +541,61 @@ app.get('/api/organizer/stats/:organizerEmail', async (req, res) => {
 
 
 
+// payment collections
+app.post('/api/payments', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const paymentCollection = database.collection('payments');
+        const userCollection = database.collection('user');
+        const payment = req.body;
+
+        const userEmail = payment.customerEmail || payment.email || payment.userEmail;
+
+        // 1. Prevent duplicate payments using upsert based on sessionId
+        const paymentData = {
+            ...payment,
+            customerEmail: userEmail,
+            createdAt: payment.createdAt || new Date()
+        };
+
+        const result = payment.sessionId
+            ? await paymentCollection.updateOne(
+                { sessionId: payment.sessionId },
+                { $setOnInsert: paymentData },
+                { upsert: true }
+            )
+            : await paymentCollection.insertOne(paymentData);
+
+        // 2. Update user's plan to isPremium: true
+        let userUpdateResult = null;
+
+        if (userEmail) {
+            userUpdateResult = await userCollection.updateOne(
+                { email: userEmail },
+                { $set: { isPremium: true, updatedAt: new Date() } }
+            );
+        }
+
+        res.json({
+            success: true,
+            message: 'Payment created and user upgraded to premium successfully',
+            result,
+            userUpdateResult
+        });
+    } catch (error) {
+        console.error('Error creating payment session:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error creating payment session',
+            error: error.message
+        });
+    }
+});
 
 
 // Start local server if not on Vercel
 if (process.env.NODE_ENV !== 'production') {
-    app.listen(port, () => {
-        console.log(`Server listening on port ${port}`);
-    });
+    app.listen(port);
 }
 
 // Export app for Vercel Serverless Function
