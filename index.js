@@ -540,57 +540,156 @@ app.get('/api/organizer/stats/:organizerEmail', async (req, res) => {
 });
 
 
-
-// payment collections
-app.post('/api/payments', async (req, res) => {
+// Ticket Bookings Collection & Management
+app.post('/api/bookings', async (req, res) => {
     try {
         const database = await connectDB();
+        const bookingCollection = database.collection('bookings');
+        const eventCollection = database.collection('events');
         const paymentCollection = database.collection('payments');
-        const userCollection = database.collection('user');
-        const payment = req.body;
 
-        const userEmail = payment.customerEmail || payment.email || payment.userEmail;
+        const {
+            eventId,
+            eventTitle,
+            eventBanner,
+            eventDate,
+            location,
+            userEmail,
+            userName,
+            quantity = 1,
+            unitPrice = 0,
+            totalPrice = 0,
+            paymentStatus = 'paid',
+            stripeSessionId = null,
+            organizerEmail = null
+        } = req.body;
 
-        // 1. Prevent duplicate payments using upsert based on sessionId
-        const paymentData = {
-            ...payment,
-            customerEmail: userEmail,
-            createdAt: payment.createdAt || new Date()
+        if (!eventId || !userEmail) {
+            return res.status(400).json({
+                success: false,
+                message: 'Event ID and user email are required'
+            });
+        }
+
+        const qty = Math.max(1, Number(quantity));
+
+        // Prevent duplicate processing if stripeSessionId is provided
+        if (stripeSessionId) {
+            const existingBooking = await bookingCollection.findOne({ stripeSessionId });
+            if (existingBooking) {
+                return res.json({
+                    success: true,
+                    message: 'Booking already exists for this session',
+                    booking: existingBooking,
+                    alreadyProcessed: true
+                });
+            }
+        }
+
+        // Fetch event to verify available seats
+        const eventQuery = ObjectId.isValid(eventId) ? { _id: new ObjectId(eventId) } : { _id: eventId };
+        const eventDoc = await eventCollection.findOne(eventQuery);
+
+        if (!eventDoc) {
+            return res.status(404).json({ success: false, message: 'Event not found' });
+        }
+
+        if (eventDoc.availableSeats !== undefined && eventDoc.availableSeats < qty) {
+            return res.status(400).json({
+                success: false,
+                message: `Only ${eventDoc.availableSeats} seats remaining.`
+            });
+        }
+
+        const ticketCode = `TKT-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+
+        const newBooking = {
+            eventId,
+            eventTitle: eventTitle || eventDoc.title,
+            eventBanner: eventBanner || eventDoc.banner,
+            eventDate: eventDate || eventDoc.date,
+            location: location || eventDoc.location,
+            category: eventDoc.category || 'General',
+            organizerEmail: organizerEmail || eventDoc.organizerEmail,
+            userEmail,
+            userName: userName || userEmail,
+            quantity: qty,
+            unitPrice: Number(unitPrice),
+            totalPrice: Number(totalPrice),
+            paymentStatus: paymentStatus || (unitPrice > 0 ? 'paid' : 'free'),
+            stripeSessionId,
+            ticketCode,
+            status: 'confirmed',
+            bookedAt: new Date()
         };
 
-        const result = payment.sessionId
-            ? await paymentCollection.updateOne(
-                { sessionId: payment.sessionId },
-                { $setOnInsert: paymentData },
+        const bookingResult = await bookingCollection.insertOne(newBooking);
+
+        // Decrement available seats on the event
+        await eventCollection.updateOne(
+            eventQuery,
+            { $inc: { availableSeats: -qty } }
+        );
+
+        // Insert payment record if paid
+        if (stripeSessionId || totalPrice > 0) {
+            await paymentCollection.updateOne(
+                { sessionId: stripeSessionId || `free-${bookingResult.insertedId}` },
+                {
+                    $setOnInsert: {
+                        sessionId: stripeSessionId || `free-${bookingResult.insertedId}`,
+                        customerEmail: userEmail,
+                        customerName: userName || userEmail,
+                        eventId,
+                        eventTitle: eventTitle || eventDoc.title,
+                        amount: Number(totalPrice),
+                        quantity: qty,
+                        type: 'event_booking',
+                        paymentStatus: paymentStatus || 'paid',
+                        createdAt: new Date()
+                    }
+                },
                 { upsert: true }
-            )
-            : await paymentCollection.insertOne(paymentData);
-
-        // 2. Update user's plan to isPremium: true
-        let userUpdateResult = null;
-
-        if (userEmail) {
-            userUpdateResult = await userCollection.updateOne(
-                { email: userEmail },
-                { $set: { isPremium: true, updatedAt: new Date() } }
             );
         }
 
         res.json({
             success: true,
-            message: 'Payment created and user upgraded to premium successfully',
-            result,
-            userUpdateResult
+            message: 'Event ticket booked successfully',
+            ticketCode,
+            bookingId: bookingResult.insertedId,
+            booking: { ...newBooking, _id: bookingResult.insertedId }
         });
     } catch (error) {
-        console.error('Error creating payment session:', error);
+        console.error('Error creating booking:', error);
         res.status(500).json({
             success: false,
-            message: 'Error creating payment session',
+            message: 'Error creating booking',
             error: error.message
         });
     }
 });
+
+
+
+// Verify session booking status
+app.get('/api/bookings/verify-session/:sessionId', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const bookingCollection = database.collection('bookings');
+        const sessionId = req.params.sessionId;
+
+        const booking = await bookingCollection.findOne({ stripeSessionId: sessionId });
+        if (booking) {
+            return res.json({ success: true, processed: true, booking });
+        }
+        res.json({ success: true, processed: false });
+    } catch (error) {
+        console.error('Error verifying booking session:', error);
+        res.status(500).json({ success: false, message: 'Error verifying session', error: error.message });
+    }
+});
+
 
 
 // Start local server if not on Vercel
