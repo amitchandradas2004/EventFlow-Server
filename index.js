@@ -798,6 +798,94 @@ app.post('/api/payments', async (req, res) => {
     }
 });
 
+// Get payment history for a user (Attendee)
+app.get('/api/payments/user/:email', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const paymentCollection = database.collection('payments');
+        const bookingCollection = database.collection('bookings');
+        const email = req.params.email;
+
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
+
+        const paymentQuery = {
+            $or: [
+                { customerEmail: email },
+                { userEmail: email },
+                { email: email }
+            ]
+        };
+
+        const bookingQuery = { userEmail: email };
+
+        const [paymentDocs, bookingDocs] = await Promise.all([
+            paymentCollection.find(paymentQuery).toArray(),
+            bookingCollection.find(bookingQuery).toArray()
+        ]);
+
+        const sessionMap = new Map();
+
+        // Add payment docs (strictly filtering for event ticket payments only)
+        paymentDocs.forEach(p => {
+            const isEventTicket = p.type === 'event_booking' || Boolean(p.eventId) || Boolean(p.eventTitle);
+            if (!isEventTicket) return;
+
+            const key = p.sessionId || String(p._id);
+            sessionMap.set(key, {
+                id: String(p._id),
+                sessionId: p.sessionId || `PAY-${p._id}`,
+                title: p.eventTitle || `Event Ticket Booking (${p.quantity || 1} seats)`,
+                amount: Number(p.amount || p.amountTotal || 0),
+                quantity: p.quantity || 1,
+                type: 'event_booking',
+                paymentStatus: p.paymentStatus || 'paid',
+                createdAt: p.createdAt ? new Date(p.createdAt) : new Date(),
+                customerEmail: p.customerEmail || email
+            });
+        });
+
+        // Add booking docs if not already present
+        bookingDocs.forEach(b => {
+            const key = b.stripeSessionId || String(b._id);
+            if (!sessionMap.has(key)) {
+                sessionMap.set(key, {
+                    id: String(b._id),
+                    sessionId: b.stripeSessionId || `TKT-${b._id}`,
+                    title: b.eventTitle || 'Event Ticket Booking',
+                    amount: Number(b.totalPrice || 0),
+                    quantity: b.quantity || 1,
+                    type: 'event_booking',
+                    paymentStatus: b.paymentStatus || 'paid',
+                    createdAt: b.bookedAt ? new Date(b.bookedAt) : new Date(),
+                    customerEmail: b.userEmail || email,
+                    ticketCode: b.ticketCode
+                });
+            }
+        });
+
+        const allPayments = Array.from(sessionMap.values()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        const total = allPayments.length;
+        const paginatedResult = allPayments.slice(skip, skip + limit);
+
+        res.json({
+            success: true,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+            result: paginatedResult
+        });
+    } catch (error) {
+        console.error('Error fetching user payment history:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching payment history',
+            error: error.message
+        });
+    }
+});
 
 
 
