@@ -670,7 +670,56 @@ app.post('/api/bookings', async (req, res) => {
     }
 });
 
+// Get single Event by ID
+app.get('/api/event/:id', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+        const id = req.params.id;
+        const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+        const result = await eventCollection.findOne(query);
+        if (!result) {
+            return res.status(404).json({ success: false, message: 'Event not found' });
+        }
+        res.json({ success: true, result });
+    } catch (error) {
+        console.error('Error fetching event by ID:', error);
+        res.status(500).json({ success: false, message: 'Error fetching event', error: error.message });
+    }
+});
 
+// Get all bookings for a user (Attendee)
+app.get('/api/bookings/user/:email', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const bookingCollection = database.collection('bookings');
+        const email = req.params.email;
+
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
+
+        const query = { userEmail: email };
+        const total = await bookingCollection.countDocuments(query);
+        const result = await bookingCollection.find(query).sort({ bookedAt: -1 }).skip(skip).limit(limit).toArray();
+
+        res.json({
+            success: true,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+            result
+        });
+    } catch (error) {
+        console.error('Error fetching user bookings:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching user bookings',
+            error: error.message
+        });
+    }
+});
 
 // Verify session booking status
 app.get('/api/bookings/verify-session/:sessionId', async (req, res) => {
