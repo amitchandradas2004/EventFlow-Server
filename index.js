@@ -728,16 +728,77 @@ app.get('/api/bookings/verify-session/:sessionId', async (req, res) => {
         const bookingCollection = database.collection('bookings');
         const sessionId = req.params.sessionId;
 
-        const booking = await bookingCollection.findOne({ stripeSessionId: sessionId });
-        if (booking) {
-            return res.json({ success: true, processed: true, booking });
+        const booking = await bookingCollection.findOne({
+            $or: [
+                { stripeSessionId: sessionId },
+                { sessionId: sessionId }
+            ]
+        });
+
+        if (!booking) {
+            return res.status(404).json({ success: false, message: 'Booking session not found' });
         }
-        res.json({ success: true, processed: false });
+
+        res.json({ success: true, booking });
     } catch (error) {
         console.error('Error verifying booking session:', error);
-        res.status(500).json({ success: false, message: 'Error verifying session', error: error.message });
+        res.status(500).json({
+            success: false,
+            message: 'Error verifying booking session',
+            error: error.message
+        });
     }
 });
+
+// payment collections
+app.post('/api/payments', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const paymentCollection = database.collection('payments');
+        const userCollection = database.collection('user');
+        const payment = req.body;
+
+        const userEmail = payment.customerEmail || payment.email || payment.userEmail;
+
+        const paymentData = {
+            ...payment,
+            customerEmail: userEmail,
+            createdAt: payment.createdAt || new Date()
+        };
+
+        const result = payment.sessionId
+            ? await paymentCollection.updateOne(
+                { sessionId: payment.sessionId },
+                { $setOnInsert: paymentData },
+                { upsert: true }
+            )
+            : await paymentCollection.insertOne(paymentData);
+
+        let userUpdateResult = null;
+        if (userEmail && payment.type !== 'event_booking') {
+            userUpdateResult = await userCollection.updateOne(
+                { email: userEmail },
+                { $set: { isPremium: true, updatedAt: new Date() } }
+            );
+        }
+
+        res.json({
+            success: true,
+            message: 'Payment recorded successfully',
+            result,
+            userUpdateResult
+        });
+    } catch (error) {
+        console.error('Error creating payment session:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error creating payment session',
+            error: error.message
+        });
+    }
+});
+
+
 
 
 
