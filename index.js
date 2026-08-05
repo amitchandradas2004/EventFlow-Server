@@ -169,6 +169,73 @@ app.get('/api/admin/users', async (req, res) => {
     }
 });
 
+// Update user block status (Block or Unblock)
+app.patch('/api/admin/user/:id/status', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const userCollection = database.collection('user');
+        const id = req.params.id;
+        const { isBlocked } = req.body;
+
+        if (typeof isBlocked !== 'boolean') {
+            return res.status(400).json({
+                success: false,
+                message: 'isBlocked must be a boolean (true or false)'
+            });
+        }
+
+        const query = ObjectId.isValid(id)
+            ? { _id: new ObjectId(id) }
+            : { $or: [{ email: id }, { id: id }] };
+
+        // Prevent blocking administrators
+        if (isBlocked) {
+            const targetUser = await userCollection.findOne(query);
+            if (!targetUser) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'User not found'
+                });
+            }
+            if ((targetUser.role || '').toLowerCase() === 'admin') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Administrators cannot be blocked.'
+                });
+            }
+        }
+
+        const updateDoc = {
+            $set: {
+                isBlocked,
+                status: isBlocked ? 'blocked' : 'active',
+                updatedAt: new Date()
+            }
+        };
+
+        const result = await userCollection.updateOne(query, updateDoc);
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: `User successfully ${isBlocked ? 'blocked' : 'unblocked'}`,
+            result
+        });
+    } catch (error) {
+        console.error('Error updating user block status:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating user block status',
+            error: error.message
+        });
+    }
+});
 
 
 // Create a new Organization
