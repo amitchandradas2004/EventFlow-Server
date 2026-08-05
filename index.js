@@ -98,6 +98,79 @@ app.patch('/api/user/:email', async (req, res) => {
     }
 });
 
+// Get all users for admin with pagination, search, role & status filter, and summary stats
+app.get('/api/admin/users', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const userCollection = database.collection('user');
+
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const search = (req.query.search || '').trim();
+        const role = (req.query.role || '').trim().toLowerCase();
+        const status = (req.query.status || '').trim().toLowerCase();
+
+        const conditions = [];
+
+        if (search) {
+            const searchRegex = { $regex: search, $options: 'i' };
+            conditions.push({
+                $or: [
+                    { name: searchRegex },
+                    { email: searchRegex }
+                ]
+            });
+        }
+
+        if (role && role !== 'all') {
+            conditions.push({ role: { $regex: new RegExp(`^${role}$`, 'i') } });
+        }
+
+        if (status === 'blocked') {
+            conditions.push({ isBlocked: true });
+        } else if (status === 'active') {
+            conditions.push({ $or: [{ isBlocked: false }, { isBlocked: { $exists: false } }] });
+        }
+
+        const query = conditions.length === 0 ? {} : conditions.length === 1 ? conditions[0] : { $and: conditions };
+
+        const total = await userCollection.countDocuments(query);
+        const result = await userCollection.find(query).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).toArray();
+
+        // Calculate overview stats across all users
+        const allUsersDocs = await userCollection.find({}, { projection: { isBlocked: 1, role: 1 } }).toArray();
+        const stats = {
+            totalUsers: allUsersDocs.length,
+            activeUsers: allUsersDocs.filter(u => !u.isBlocked).length,
+            blockedUsers: allUsersDocs.filter(u => u.isBlocked === true).length,
+            admins: allUsersDocs.filter(u => (u.role || '').toLowerCase() === 'admin').length,
+            organizers: allUsersDocs.filter(u => (u.role || '').toLowerCase() === 'organizer').length,
+            attendees: allUsersDocs.filter(u => (u.role || '').toLowerCase() === 'attendee' || !u.role).length,
+        };
+
+        res.json({
+            success: true,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+            stats,
+            result
+        });
+    } catch (error) {
+        console.error('Error fetching admin users:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching users',
+            error: error.message
+        });
+    }
+});
+
+
+
 // Create a new Organization
 app.post('/api/organization', async (req, res) => {
     try {
