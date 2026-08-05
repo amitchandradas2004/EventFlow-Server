@@ -31,6 +31,14 @@ async function connectDB() {
     return db;
 }
 
+// Helper function to check if a user is blocked
+async function checkBlockedUser(database, email) {
+    if (!email) return false;
+    const userCollection = database.collection('user');
+    const userDoc = await userCollection.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') } });
+    return userDoc?.isBlocked === true || userDoc?.status === 'blocked';
+}
+
 // Routes
 app.get('/', (req, res) => {
     res.send('EventFlow Server is running!');
@@ -55,8 +63,19 @@ app.get('/api/user/:id', async (req, res) => {
 app.patch('/api/user/:email', async (req, res) => {
     try {
         const database = await connectDB();
-        const userCollection = database.collection('user');
         const email = req.params.email;
+
+        // Check if user is blocked
+        const isBlocked = await checkBlockedUser(database, email);
+        if (isBlocked) {
+            return res.status(403).json({
+                success: false,
+                isBlocked: true,
+                message: 'Your account is currently blocked by an administrator. Profile update is restricted.'
+            });
+        }
+
+        const userCollection = database.collection('user');
         const query = { email: email };
         const { name, image } = req.body;
 
@@ -249,6 +268,15 @@ app.post('/api/organization', async (req, res) => {
         const { organizerEmail } = orgData;
 
         if (organizerEmail) {
+            const isBlocked = await checkBlockedUser(database, organizerEmail);
+            if (isBlocked) {
+                return res.status(403).json({
+                    success: false,
+                    isBlocked: true,
+                    message: 'Your account is currently blocked by an administrator. Action restricted.'
+                });
+            }
+
             // Check if user is premium
             const user = await userCollection.findOne({ email: organizerEmail });
             const isPremium = user?.isPremium || false;
@@ -404,6 +432,15 @@ app.post('/api/event', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: 'All fields are required including organizationId and organizerEmail'
+            });
+        }
+
+        const isBlocked = await checkBlockedUser(database, organizerEmail);
+        if (isBlocked) {
+            return res.status(403).json({
+                success: false,
+                isBlocked: true,
+                message: 'Your account is currently blocked by an administrator. Action restricted.'
             });
         }
 
@@ -708,6 +745,15 @@ app.post('/api/bookings', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: 'Event ID and user email are required'
+            });
+        }
+
+        const isBlocked = await checkBlockedUser(database, userEmail);
+        if (isBlocked) {
+            return res.status(403).json({
+                success: false,
+                isBlocked: true,
+                message: 'Your account is currently blocked by an administrator. Ticket booking is restricted.'
             });
         }
 
