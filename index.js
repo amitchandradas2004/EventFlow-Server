@@ -1521,7 +1521,123 @@ app.get('/api/admin/analytics', async (req, res) => {
         });
     }
 });
+// Get Admin Overview Dashboard summary and pending actions
+app.get('/api/admin/overview', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const userCollection = database.collection('user');
+        const orgCollection = database.collection('organization');
+        const eventCollection = database.collection('events');
+        const bookingCollection = database.collection('bookings');
+        const paymentCollection = database.collection('payments');
+        const paymentCollectionAlt = database.collection('payment');
 
+        const [
+            users,
+            orgs,
+            events,
+            bookings,
+            payments1,
+            payments2,
+            pendingEvents,
+            pendingOrgs
+        ] = await Promise.all([
+            userCollection.find({}).toArray(),
+            orgCollection.find({}).toArray(),
+            eventCollection.find({}).toArray(),
+            bookingCollection.find({}).toArray(),
+            paymentCollection.find({}).toArray(),
+            paymentCollectionAlt.find({}).toArray(),
+            eventCollection.find({ status: 'pending' }).sort({ createdAt: -1 }).limit(5).toArray(),
+            orgCollection.find({ status: 'pending' }).sort({ createdAt: -1 }).limit(5).toArray()
+        ]);
+
+        const allPayments = [...payments1, ...payments2];
+
+        // Revenue calculations
+        const transactionMap = new Map();
+        allPayments.forEach(p => {
+            const isPremium = p.type === 'premium_membership' || p.type === 'premium' || (!p.eventId && !p.eventTitle);
+            const key = p.sessionId || p.stripeSessionId || String(p._id);
+            const rawAmount = p.amount !== undefined ? p.amount : (p.amountTotal !== undefined ? p.amountTotal : 0);
+            const amount = Number(rawAmount) > 500 ? Number(rawAmount) / 100 : Number(rawAmount || (isPremium ? 49 : 0));
+            const status = (p.paymentStatus || p.status || 'completed').toLowerCase();
+            const date = p.createdAt ? new Date(p.createdAt) : new Date();
+
+            const email = p.customerEmail || p.userEmail || p.email || 'N/A';
+            const name = p.customerName || p.userName || p.name || email;
+            let item = isPremium ? 'Pro Organizer Premium Lifetime Plan' : (p.eventTitle ? `Ticket: ${p.eventTitle}` : 'Event Ticket Booking');
+
+            transactionMap.set(key, {
+                id: String(p._id),
+                transactionId: key,
+                userEmail: email,
+                userName: name,
+                amount,
+                paymentStatus: status,
+                date,
+                item,
+                type: isPremium ? 'premium_membership' : 'event_booking'
+            });
+        });
+
+        bookings.forEach(b => {
+            const key = b.stripeSessionId || String(b._id);
+            if (!transactionMap.has(key)) {
+                const amount = Number(b.totalPrice !== undefined ? b.totalPrice : (b.unitPrice ? b.unitPrice * (b.quantity || 1) : 0));
+                const status = (b.paymentStatus || 'completed').toLowerCase();
+                const date = b.bookedAt ? new Date(b.bookedAt) : (b.createdAt ? new Date(b.createdAt) : new Date());
+                const email = b.userEmail || b.customerEmail || 'N/A';
+                const name = b.userName || b.customerName || email;
+                const item = `Ticket: ${b.eventTitle || 'Event Ticket Booking'}`;
+
+                transactionMap.set(key, {
+                    id: String(b._id),
+                    transactionId: key,
+                    userEmail: email,
+                    userName: name,
+                    amount,
+                    paymentStatus: status,
+                    date,
+                    item,
+                    type: 'event_booking'
+                });
+            }
+        });
+
+        const allTxns = Array.from(transactionMap.values());
+        allTxns.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        const totalRevenue = allTxns.reduce((acc, t) => acc + (t.paymentStatus === 'completed' || t.paymentStatus === 'paid' ? t.amount : 0), 0);
+        const recentTransactions = allTxns.slice(0, 5);
+
+        const summary = {
+            totalRevenue,
+            totalUsers: users.length,
+            totalOrgs: orgs.length,
+            totalEvents: events.length,
+            pendingEventsCount: events.filter(e => (e.status || 'pending').toLowerCase() === 'pending').length,
+            pendingOrgsCount: orgs.filter(o => (o.status || 'pending').toLowerCase() === 'pending').length,
+            approvedEventsCount: events.filter(e => (e.status || '').toLowerCase() === 'approved').length,
+            approvedOrgsCount: orgs.filter(o => (o.status || '').toLowerCase() === 'approved').length
+        };
+
+        res.json({
+            success: true,
+            summary,
+            pendingEvents,
+            pendingOrgs,
+            recentTransactions
+        });
+    } catch (error) {
+        console.error('Error generating admin overview:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating overview',
+            error: error.message
+        });
+    }
+});
 
 // Start local server if not on Vercel
 if (process.env.NODE_ENV !== 'production') {
