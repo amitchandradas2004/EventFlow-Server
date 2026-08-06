@@ -614,6 +614,117 @@ app.get('/api/event/organizer/:organizerEmail', async (req, res) => {
     }
 });
 
+// Get all events for admin with pagination, search, status filter & summary stats
+app.get('/api/admin/events', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const search = (req.query.search || '').trim();
+        const status = (req.query.status || '').trim().toLowerCase();
+
+        const conditions = [];
+
+        if (search) {
+            const searchRegex = { $regex: search, $options: 'i' };
+            conditions.push({
+                $or: [
+                    { title: searchRegex },
+                    { organizerEmail: searchRegex },
+                    { location: searchRegex },
+                    { category: searchRegex }
+                ]
+            });
+        }
+
+        if (status && status !== 'all') {
+            conditions.push({ status: { $regex: new RegExp(`^${status}$`, 'i') } });
+        }
+
+        const query = conditions.length === 0 ? {} : conditions.length === 1 ? conditions[0] : { $and: conditions };
+
+        const total = await eventCollection.countDocuments(query);
+        const result = await eventCollection.find(query).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).toArray();
+
+        // Stats across all events
+        const allEvents = await eventCollection.find({}, { projection: { status: 1 } }).toArray();
+        const stats = {
+            totalEvents: allEvents.length,
+            pendingEvents: allEvents.filter(e => (e.status || 'pending').toLowerCase() === 'pending').length,
+            approvedEvents: allEvents.filter(e => (e.status || 'pending').toLowerCase() === 'approved').length,
+            rejectedEvents: allEvents.filter(e => (e.status || 'pending').toLowerCase() === 'rejected').length,
+        };
+
+        res.json({
+            success: true,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+            stats,
+            result
+        });
+    } catch (error) {
+        console.error('Error fetching admin events:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching admin events',
+            error: error.message
+        });
+    }
+});
+
+// Update event status (Approve or Reject)
+app.patch('/api/admin/event/:id/status', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const eventCollection = database.collection('events');
+        const id = req.params.id;
+        const { status } = req.body;
+
+        if (!status || !['approved', 'rejected', 'pending'].includes(status.toLowerCase())) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid status. Must be approved, rejected, or pending.'
+            });
+        }
+
+        const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+        const updateDoc = {
+            $set: {
+                status: status.toLowerCase(),
+                updatedAt: new Date()
+            }
+        };
+
+        const result = await eventCollection.updateOne(query, updateDoc);
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Event not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: `Event status set to ${status}`,
+            result
+        });
+    } catch (error) {
+        console.error('Error updating event status:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating event status',
+            error: error.message
+        });
+    }
+});
+
 // Delete an Event by ID
 app.delete('/api/event/:id', async (req, res) => {
     try {
