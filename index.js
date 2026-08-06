@@ -1347,7 +1347,180 @@ app.get('/api/admin/transactions', async (req, res) => {
     }
 });
 
+// Get comprehensive system analytics for Admin Dashboard
+app.get('/api/admin/analytics', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const userCollection = database.collection('user');
+        const orgCollection = database.collection('organization');
+        const eventCollection = database.collection('events');
+        const bookingCollection = database.collection('bookings');
+        const paymentCollection = database.collection('payments');
+        const paymentCollectionAlt = database.collection('payment');
 
+        const [
+            users,
+            orgs,
+            events,
+            bookings,
+            payments1,
+            payments2
+        ] = await Promise.all([
+            userCollection.find({}).toArray(),
+            orgCollection.find({}).toArray(),
+            eventCollection.find({}).toArray(),
+            bookingCollection.find({}).toArray(),
+            paymentCollection.find({}).toArray(),
+            paymentCollectionAlt.find({}).toArray()
+        ]);
+
+        const allPayments = [...payments1, ...payments2];
+
+        // 1. Overall Metrics
+        const totalUsers = users.length;
+        const totalOrgs = orgs.length;
+        const totalEvents = events.length;
+        const totalBookings = bookings.length;
+
+        // Calculate Revenue from payments & bookings
+        const transactionMap = new Map();
+        allPayments.forEach(p => {
+            const isPremium = p.type === 'premium_membership' || p.type === 'premium' || (!p.eventId && !p.eventTitle);
+            const key = p.sessionId || p.stripeSessionId || String(p._id);
+            const rawAmount = p.amount !== undefined ? p.amount : (p.amountTotal !== undefined ? p.amountTotal : 0);
+            const amount = Number(rawAmount) > 500 ? Number(rawAmount) / 100 : Number(rawAmount || (isPremium ? 49 : 0));
+            const status = (p.paymentStatus || p.status || 'completed').toLowerCase();
+            const date = p.createdAt ? new Date(p.createdAt) : new Date();
+
+            transactionMap.set(key, { amount, status, date, type: isPremium ? 'premium' : 'ticket' });
+        });
+
+        bookings.forEach(b => {
+            const key = b.stripeSessionId || String(b._id);
+            if (!transactionMap.has(key)) {
+                const amount = Number(b.totalPrice !== undefined ? b.totalPrice : (b.unitPrice ? b.unitPrice * (b.quantity || 1) : 0));
+                const status = (b.paymentStatus || 'completed').toLowerCase();
+                const date = b.bookedAt ? new Date(b.bookedAt) : (b.createdAt ? new Date(b.createdAt) : new Date());
+
+                transactionMap.set(key, { amount, status, date, type: 'ticket' });
+            }
+        });
+
+        const allTxns = Array.from(transactionMap.values());
+        const totalRevenue = allTxns.reduce((acc, t) => acc + (t.status === 'completed' || t.status === 'paid' ? t.amount : 0), 0);
+        const premiumRevenue = allTxns.filter(t => t.type === 'premium' && (t.status === 'completed' || t.status === 'paid')).reduce((acc, t) => acc + t.amount, 0);
+        const ticketRevenue = allTxns.filter(t => t.type === 'ticket' && (t.status === 'completed' || t.status === 'paid')).reduce((acc, t) => acc + t.amount, 0);
+
+        // 2. User Role Distribution
+        const userRoles = {
+            attendees: users.filter(u => (u.role || 'attendee').toLowerCase() === 'attendee').length,
+            organizers: users.filter(u => (u.role || '').toLowerCase() === 'organizer').length,
+            admins: users.filter(u => (u.role || '').toLowerCase() === 'admin').length,
+            active: users.filter(u => !u.isBlocked).length,
+            blocked: users.filter(u => u.isBlocked === true).length
+        };
+
+        // 3. Event & Organization Status Breakdown
+        const eventStatusStats = {
+            approved: events.filter(e => (e.status || 'pending').toLowerCase() === 'approved').length,
+            pending: events.filter(e => (e.status || 'pending').toLowerCase() === 'pending').length,
+            rejected: events.filter(e => (e.status || 'pending').toLowerCase() === 'rejected').length
+        };
+
+        const orgStatusStats = {
+            approved: orgs.filter(o => (o.status || 'pending').toLowerCase() === 'approved').length,
+            pending: orgs.filter(o => (o.status || 'pending').toLowerCase() === 'pending').length,
+            rejected: orgs.filter(o => (o.status || 'pending').toLowerCase() === 'rejected').length
+        };
+
+        // 4. Event Category Breakdown
+        const categoryMap = {};
+        events.forEach(e => {
+            const cat = e.category || 'General';
+            categoryMap[cat] = (categoryMap[cat] || 0) + 1;
+        });
+
+        const eventCategories = Object.entries(categoryMap).map(([category, count]) => ({
+            category,
+            count
+        })).sort((a, b) => b.count - a.count);
+
+        // 5. Monthly Revenue & Booking Growth Trend (Last 6 Months)
+        const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const now = new Date();
+        const monthlyTrend = [];
+
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const monthLabel = `${monthNames[d.getMonth()]} ${d.getFullYear() === now.getFullYear() ? '' : d.getFullYear()}`.trim();
+            const year = d.getFullYear();
+            const month = d.getMonth();
+
+            const monthTxns = allTxns.filter(t => {
+                const td = new Date(t.date);
+                return td.getFullYear() === year && td.getMonth() === month && (t.status === 'completed' || t.status === 'paid');
+            });
+
+            const monthBookings = bookings.filter(b => {
+                const bd = new Date(b.bookedAt || b.createdAt || Date.now());
+                return bd.getFullYear() === year && bd.getMonth() === month;
+            });
+
+            const revenue = monthTxns.reduce((sum, t) => sum + t.amount, 0);
+            const tickets = monthBookings.reduce((sum, b) => sum + Number(b.quantity || 1), 0);
+
+            monthlyTrend.push({
+                month: monthLabel,
+                revenue,
+                tickets,
+                transactions: monthTxns.length
+            });
+        }
+
+        // 6. Top Organizations by Event Count
+        const orgEventCounts = {};
+        events.forEach(e => {
+            if (e.organizerEmail) {
+                orgEventCounts[e.organizerEmail] = (orgEventCounts[e.organizerEmail] || 0) + 1;
+            }
+        });
+
+        const topOrganizers = orgs.map(org => ({
+            _id: org._id,
+            organizationName: org.organizationName,
+            logo: org.logo,
+            organizerEmail: org.organizerEmail,
+            status: org.status || 'pending',
+            eventCount: orgEventCounts[org.organizerEmail] || 0
+        })).sort((a, b) => b.eventCount - a.eventCount).slice(0, 5);
+
+        res.json({
+            success: true,
+            summary: {
+                totalRevenue,
+                premiumRevenue,
+                ticketRevenue,
+                totalUsers,
+                totalOrgs,
+                totalEvents,
+                totalBookings
+            },
+            userRoles,
+            eventStatusStats,
+            orgStatusStats,
+            eventCategories,
+            monthlyTrend,
+            topOrganizers
+        });
+    } catch (error) {
+        console.error('Error generating admin analytics:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating analytics',
+            error: error.message
+        });
+    }
+});
 
 
 // Start local server if not on Vercel
