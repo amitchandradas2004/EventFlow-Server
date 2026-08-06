@@ -1184,6 +1184,169 @@ app.get('/api/payments/user/:email', async (req, res) => {
     }
 });
 
+// Get all transactions for admin with stats, pagination, search & type filtering
+app.get('/api/admin/transactions', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const paymentCollection = database.collection('payments');
+        const paymentCollectionAlt = database.collection('payment');
+        const bookingCollection = database.collection('bookings');
+
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const search = (req.query.search || '').trim().toLowerCase();
+        const typeFilter = (req.query.type || 'all').trim().toLowerCase();
+        const statusFilter = (req.query.status || 'all').trim().toLowerCase();
+
+        const [paymentDocs1, paymentDocs2, bookingDocs] = await Promise.all([
+            paymentCollection.find({}).sort({ createdAt: -1 }).toArray(),
+            paymentCollectionAlt.find({}).sort({ createdAt: -1 }).toArray(),
+            bookingCollection.find({}).sort({ bookedAt: -1 }).toArray()
+        ]);
+
+        const paymentDocs = [...paymentDocs1, ...paymentDocs2];
+
+        const transactionMap = new Map();
+        const seenBookingIds = new Set();
+        const seenSessionIds = new Set();
+
+        // 1. Process payment collection documents
+        paymentDocs.forEach(p => {
+            const rawType = (p.type || '').toLowerCase();
+            const isEventBooking = rawType === 'event_booking' || Boolean(p.eventId) || (Boolean(p.eventTitle) && !rawType.includes('premium'));
+            const isPremium = !isEventBooking || rawType.includes('premium') || rawType.includes('membership') || (!p.eventId && !p.eventTitle);
+            const txnType = isPremium ? 'premium_membership' : 'event_booking';
+
+            const sessionId = p.sessionId || p.stripeSessionId;
+            const key = sessionId || String(p._id);
+
+            if (sessionId) seenSessionIds.add(sessionId);
+            if (p.bookingId) seenBookingIds.add(String(p.bookingId));
+            if (p.ticketCode) seenBookingIds.add(p.ticketCode);
+
+            const email = p.customerEmail || p.userEmail || p.email || 'N/A';
+            const name = p.customerName || p.userName || p.name || email;
+            const rawAmount = p.amount !== undefined ? p.amount : (p.amountTotal !== undefined ? p.amountTotal : 0);
+            const amount = Number(rawAmount) > 500 ? Number(rawAmount) / 100 : Number(rawAmount || (isPremium ? 49 : 0));
+            const status = (p.paymentStatus || p.status || 'completed').toLowerCase();
+            const date = p.createdAt ? new Date(p.createdAt) : (p.updatedAt ? new Date(p.updatedAt) : new Date());
+
+            let item = isPremium
+                ? 'Pro Organizer Premium Lifetime Plan'
+                : (p.eventTitle ? `Ticket: ${p.eventTitle}` : 'Event Ticket Booking');
+
+            if (!isPremium && p.quantity && p.quantity > 1) {
+                item += ` (${p.quantity} tickets)`;
+            }
+
+            transactionMap.set(key, {
+                id: String(p._id),
+                transactionId: sessionId || p.ticketCode || `TXN-${String(p._id).slice(-8).toUpperCase()}`,
+                type: txnType,
+                item,
+                userEmail: email,
+                userName: name,
+                amount,
+                quantity: p.quantity || 1,
+                paymentStatus: status,
+                date,
+                source: 'payments'
+            });
+        });
+
+        // 2. Process booking collection documents (if not already recorded)
+        bookingDocs.forEach(b => {
+            const bSessionId = b.stripeSessionId || b.sessionId;
+            const bIdStr = String(b._id);
+            const bTicketCode = b.ticketCode;
+
+            const isAlreadyMatched =
+                (bSessionId && seenSessionIds.has(bSessionId)) ||
+                (bSessionId && transactionMap.has(bSessionId)) ||
+                seenBookingIds.has(bIdStr) ||
+                (bTicketCode && seenBookingIds.has(bTicketCode)) ||
+                transactionMap.has(bIdStr);
+
+            if (!isAlreadyMatched) {
+                const amount = Number(b.totalPrice !== undefined ? b.totalPrice : (b.unitPrice ? b.unitPrice * (b.quantity || 1) : 0));
+                const email = b.userEmail || b.customerEmail || 'N/A';
+                const name = b.userName || b.customerName || email;
+                const status = (b.paymentStatus || 'completed').toLowerCase();
+                const date = b.bookedAt ? new Date(b.bookedAt) : (b.createdAt ? new Date(b.createdAt) : new Date());
+                const item = `Ticket: ${b.eventTitle || 'Event Ticket Booking'}${b.quantity > 1 ? ` (${b.quantity} tickets)` : ''}`;
+                const key = bSessionId || bIdStr;
+
+                transactionMap.set(key, {
+                    id: bIdStr,
+                    transactionId: bSessionId || bTicketCode || `TKT-${bIdStr.slice(-8).toUpperCase()}`,
+                    type: 'event_booking',
+                    item,
+                    userEmail: email,
+                    userName: name,
+                    amount,
+                    quantity: b.quantity || 1,
+                    paymentStatus: status,
+                    date,
+                    source: 'bookings'
+                });
+            }
+        });
+
+        let allTransactions = Array.from(transactionMap.values());
+
+        // Overall statistics across all transactions
+        const stats = {
+            totalRevenue: allTransactions.reduce((acc, t) => acc + (t.paymentStatus === 'completed' || t.paymentStatus === 'paid' ? t.amount : 0), 0),
+            totalTransactions: allTransactions.length,
+            premiumPurchasesCount: allTransactions.filter(t => t.type === 'premium_membership').length,
+            eventBookingsCount: allTransactions.filter(t => t.type === 'event_booking').length
+        };
+
+        // Apply filters
+        if (typeFilter !== 'all') {
+            allTransactions = allTransactions.filter(t => t.type.toLowerCase() === typeFilter);
+        }
+
+        if (statusFilter !== 'all') {
+            allTransactions = allTransactions.filter(t => t.paymentStatus.toLowerCase() === statusFilter);
+        }
+
+        if (search) {
+            allTransactions = allTransactions.filter(t =>
+                t.transactionId.toLowerCase().includes(search) ||
+                t.userEmail.toLowerCase().includes(search) ||
+                t.userName.toLowerCase().includes(search) ||
+                t.item.toLowerCase().includes(search)
+            );
+        }
+
+        // Sort by date descending
+        allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        const total = allTransactions.length;
+        const paginatedResult = allTransactions.slice(skip, skip + limit);
+
+        res.json({
+            success: true,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+            stats,
+            result: paginatedResult
+        });
+    } catch (error) {
+        console.error('Error fetching admin transactions:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching transactions',
+            error: error.message
+        });
+    }
+});
+
 
 
 
